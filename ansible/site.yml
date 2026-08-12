@@ -39,6 +39,7 @@
           - apt-transport-https
           - ca-certificates
           - nginx
+          - acl
         state: present
 
     # ── PHP 8.2 (Ondrej PPA) ────────────────────────────────────────────────
@@ -96,7 +97,6 @@
         - tests
         - artisan
         - composer.json
-        - composer.lock
 
     - name: Install PHP dependencies
       ansible.builtin.shell: |
