@@ -74,16 +74,14 @@
       ansible.builtin.file:
         path: "{{ app_dir }}"
         state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
+        owner: root
+        group: root
         mode: "0755"
 
     - name: Copy application files
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../{{ item }}"
         dest: "{{ app_dir }}/{{ item }}"
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
         mode: preserve
       loop:
         - app
@@ -98,39 +96,42 @@
         - artisan
         - composer.json
 
-    # bootstrap/cache must be writable by www-data BEFORE composer install
-    # so that the post-autoload-dump artisan package:discover hook succeeds
-    - name: Set bootstrap/cache permissions before composer install
+    # Ensure bootstrap/cache and storage are writable before composer install
+    - name: Ensure bootstrap/cache directory exists and is writable
       ansible.builtin.file:
         path: "{{ app_dir }}/bootstrap/cache"
         state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
-        mode: "0775"
-        recurse: true
+        owner: root
+        group: root
+        mode: "0777"
 
-    - name: Set storage permissions before composer install
+    - name: Ensure storage directories exist and are writable
       ansible.builtin.file:
-        path: "{{ app_dir }}/storage"
+        path: "{{ item }}"
         state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
-        mode: "0775"
+        owner: root
+        group: root
+        mode: "0777"
         recurse: true
+      loop:
+        - "{{ app_dir }}/storage"
+        - "{{ app_dir }}/storage/framework"
+        - "{{ app_dir }}/storage/framework/cache"
+        - "{{ app_dir }}/storage/framework/sessions"
+        - "{{ app_dir }}/storage/framework/views"
+        - "{{ app_dir }}/storage/logs"
 
+    # Run composer as root to avoid ACL/setfacl permission issues
     - name: Install PHP dependencies
       ansible.builtin.shell: |
-        cd {{ app_dir }} && composer install --no-dev --optimize-autoloader --no-interaction
+        cd {{ app_dir }} && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
       args:
         creates: "{{ app_dir }}/vendor/autoload.php"
-      become_user: "{{ app_user }}"
 
     - name: Deploy .env file
       ansible.builtin.copy:
         dest: "{{ app_dir }}/.env"
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
-        mode: "0640"
+        mode: "0644"
         content: |
           APP_NAME=phpaws1
           APP_ENV=production
@@ -150,6 +151,15 @@
       ansible.builtin.shell: |
         cd {{ app_dir }} && php artisan config:cache && php artisan route:cache && php artisan view:cache
       changed_when: true
+
+    # Set final ownership for Nginx/PHP-FPM to read
+    - name: Set app directory ownership to www-data
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        recurse: true
 
     # ── Nginx configuration ─────────────────────────────────────────────────
     - name: Write Nginx site config
