@@ -1,0 +1,215 @@
+---
+- name: Configure phpaws1 web server
+  hosts: web
+  become: true
+  gather_facts: true
+
+  vars:
+    app_user: www-data
+    app_dir: /var/www/phpaws1
+    php_version: "8.2"
+
+  tasks:
+    # ── Wait for SSH to be ready ────────────────────────────────────────────
+    - name: Wait for port 22 to be open
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        timeout: 120
+        delay: 5
+      delegate_to: localhost
+      become: false
+
+    # ── System packages ─────────────────────────────────────────────────────
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+      retries: 5
+      delay: 10
+      register: apt_result
+      until: apt_result is succeeded
+
+    - name: Install prerequisite packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - unzip
+          - git
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+          - nginx
+        state: present
+
+    # ── PHP 8.2 (Ondrej PPA) ────────────────────────────────────────────────
+    - name: Add Ondrej PHP PPA
+      ansible.builtin.apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+        update_cache: true
+
+    - name: Install PHP 8.2 and extensions
+      ansible.builtin.apt:
+        name:
+          - "php{{ php_version }}-fpm"
+          - "php{{ php_version }}-cli"
+          - "php{{ php_version }}-mbstring"
+          - "php{{ php_version }}-xml"
+          - "php{{ php_version }}-bcmath"
+          - "php{{ php_version }}-curl"
+          - "php{{ php_version }}-zip"
+          - "php{{ php_version }}-tokenizer"
+        state: present
+
+    # ── Composer ────────────────────────────────────────────────────────────
+    - name: Install Composer
+      ansible.builtin.shell: |
+        curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+      args:
+        creates: /usr/local/bin/composer
+
+    # ── Application code ────────────────────────────────────────────────────
+    - name: Create app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Copy application files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../{{ item }}"
+        dest: "{{ app_dir }}/{{ item }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: preserve
+      loop:
+        - app
+        - bootstrap
+        - config
+        - database
+        - public
+        - resources
+        - routes
+        - storage
+        - tests
+        - artisan
+        - composer.json
+        - composer.lock
+
+    - name: Install PHP dependencies
+      ansible.builtin.shell: |
+        cd {{ app_dir }} && composer install --no-dev --optimize-autoloader --no-interaction
+      args:
+        creates: "{{ app_dir }}/vendor/autoload.php"
+      become_user: "{{ app_user }}"
+
+    - name: Set storage and cache directory permissions
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0775"
+        recurse: true
+      loop:
+        - "{{ app_dir }}/storage"
+        - "{{ app_dir }}/bootstrap/cache"
+
+    - name: Deploy .env file
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0640"
+        content: |
+          APP_NAME=phpaws1
+          APP_ENV=production
+          APP_DEBUG=false
+          APP_URL=http://localhost
+          LOG_CHANNEL=stderr
+          LOG_LEVEL=error
+          DB_CONNECTION=sqlite
+          DB_DATABASE=/tmp/database.sqlite
+
+    - name: Generate application key
+      ansible.builtin.shell: |
+        cd {{ app_dir }} && php artisan key:generate --force
+      changed_when: true
+
+    - name: Optimize Laravel
+      ansible.builtin.shell: |
+        cd {{ app_dir }} && php artisan config:cache && php artisan route:cache && php artisan view:cache
+      changed_when: true
+
+    # ── Nginx configuration ─────────────────────────────────────────────────
+    - name: Write Nginx site config
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-available/phpaws1
+        mode: "0644"
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+
+              root /var/www/phpaws1/public;
+              index index.php index.html;
+
+              server_name _;
+
+              location / {
+                  try_files $uri $uri/ /index.php?$query_string;
+              }
+
+              location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/run/php/php{{ php_version }}-fpm.sock;
+              }
+
+              location ~ /\.ht {
+                  deny all;
+              }
+          }
+      notify: Reload Nginx
+
+    - name: Enable phpaws1 Nginx site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/phpaws1
+        dest: /etc/nginx/sites-enabled/phpaws1
+        state: link
+      notify: Reload Nginx
+
+    - name: Remove default Nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    # ── Services ────────────────────────────────────────────────────────────
+    - name: Flush handlers before service checks
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ensure PHP-FPM is started and enabled
+      ansible.builtin.service:
+        name: "php{{ php_version }}-fpm"
+        state: started
+        enabled: true
+
+    - name: Ensure Nginx is started and enabled
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Wait for app to be reachable on port 80
+      ansible.builtin.wait_for:
+        port: 80
+        host: localhost
+        timeout: 60
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded

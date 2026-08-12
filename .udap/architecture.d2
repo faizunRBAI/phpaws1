@@ -1,0 +1,8 @@
+# udap:meta cloud=aws region=us-east-1 target=ec2
+
+vpc: VPC (us-east-1) {
+  ec2: PHP App Server (EC2) { shape: rectangle; udap-type: aws.ec2 }
+}
+user: User { shape: rectangle; udap-type: generic.user }
+
+user -> vpc.ec2: HTTP/HTTPS (port 80)
