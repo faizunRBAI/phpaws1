@@ -98,24 +98,32 @@
         - artisan
         - composer.json
 
+    # bootstrap/cache must be writable by www-data BEFORE composer install
+    # so that the post-autoload-dump artisan package:discover hook succeeds
+    - name: Set bootstrap/cache permissions before composer install
+      ansible.builtin.file:
+        path: "{{ app_dir }}/bootstrap/cache"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0775"
+        recurse: true
+
+    - name: Set storage permissions before composer install
+      ansible.builtin.file:
+        path: "{{ app_dir }}/storage"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0775"
+        recurse: true
+
     - name: Install PHP dependencies
       ansible.builtin.shell: |
         cd {{ app_dir }} && composer install --no-dev --optimize-autoloader --no-interaction
       args:
         creates: "{{ app_dir }}/vendor/autoload.php"
       become_user: "{{ app_user }}"
-
-    - name: Set storage and cache directory permissions
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
-        mode: "0775"
-        recurse: true
-      loop:
-        - "{{ app_dir }}/storage"
-        - "{{ app_dir }}/bootstrap/cache"
 
     - name: Deploy .env file
       ansible.builtin.copy:
