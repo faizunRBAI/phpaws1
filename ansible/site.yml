@@ -70,34 +70,15 @@
         creates: /usr/local/bin/composer
 
     # ── Application code ────────────────────────────────────────────────────
-    - name: Create app directory
-      ansible.builtin.file:
-        path: "{{ app_dir }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Copy application files
+    # Copy entire repo root into app_dir (trailing slash = copy contents, not dir)
+    - name: Copy application to server
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../{{ item }}"
-        dest: "{{ app_dir }}/{{ item }}"
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ app_dir }}/"
         mode: preserve
-      loop:
-        - app
-        - bootstrap
-        - config
-        - database
-        - public
-        - resources
-        - routes
-        - storage
-        - tests
-        - artisan
-        - composer.json
 
     # Ensure bootstrap/cache and storage are writable before composer install
-    - name: Ensure bootstrap/cache directory exists and is writable
+    - name: Ensure bootstrap/cache is writable
       ansible.builtin.file:
         path: "{{ app_dir }}/bootstrap/cache"
         state: directory
@@ -105,14 +86,13 @@
         group: root
         mode: "0777"
 
-    - name: Ensure storage directories exist and are writable
+    - name: Ensure storage directories are writable
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         owner: root
         group: root
         mode: "0777"
-        recurse: true
       loop:
         - "{{ app_dir }}/storage"
         - "{{ app_dir }}/storage/framework"
@@ -121,12 +101,11 @@
         - "{{ app_dir }}/storage/framework/views"
         - "{{ app_dir }}/storage/logs"
 
-    # Run composer as root to avoid ACL/setfacl permission issues
+    # Run composer as root (COMPOSER_ALLOW_SUPERUSER=1) to avoid ACL issues
     - name: Install PHP dependencies
       ansible.builtin.shell: |
         cd {{ app_dir }} && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
-      args:
-        creates: "{{ app_dir }}/vendor/autoload.php"
+      changed_when: true
 
     - name: Deploy .env file
       ansible.builtin.copy:
@@ -147,12 +126,12 @@
         cd {{ app_dir }} && php artisan key:generate --force
       changed_when: true
 
-    - name: Optimize Laravel
+    - name: Cache Laravel config and routes
       ansible.builtin.shell: |
         cd {{ app_dir }} && php artisan config:cache && php artisan route:cache && php artisan view:cache
       changed_when: true
 
-    # Set final ownership for Nginx/PHP-FPM to read
+    # Set final ownership for Nginx/PHP-FPM
     - name: Set app directory ownership to www-data
       ansible.builtin.file:
         path: "{{ app_dir }}"
